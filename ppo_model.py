@@ -24,14 +24,21 @@ LR = 1e-4  # Lower lr stabilises training greatly
 
 DUMMY_ACTION, DUMMY_VALUE = np.zeros((1, NUM_ACTIONS)), np.zeros((1, 1))
 
-def proximal_policy_optimization_loss(advantage, old_prediction):
-    def loss(y_true, y_pred):
-        prob = K.sum(y_true * y_pred, axis=-1)
-        old_prob = K.sum(y_true * old_prediction, axis=-1)
-        r = prob/(old_prob + 1e-10)
-        return -K.mean(K.minimum(r * advantage, K.clip(r, min_value=1 - LOSS_CLIPPING, max_value=1 + LOSS_CLIPPING) * advantage) + ENTROPY_LOSS * -(prob * K.log(prob + 1e-10)))
-    return loss
 
+def proximal_policy_optimization_loss_continuous(advantage, old_prediction):
+    def loss(y_true, y_pred):
+        var = K.square(NOISE)
+        pi = 3.1415926
+        denom = K.sqrt(2 * pi * var)
+        prob_num = K.exp(- K.square(y_true - y_pred) / (2 * var))
+        old_prob_num = K.exp(- K.square(y_true - old_prediction) / (2 * var))
+
+        prob = prob_num/denom
+        old_prob = old_prob_num/denom
+        r = prob/(old_prob + 1e-10)
+
+        return -K.mean(K.minimum(r * advantage, K.clip(r, min_value=1 - LOSS_CLIPPING, max_value=1 + LOSS_CLIPPING) * advantage))
+    return loss
 
 
 class PPOModel:
@@ -47,11 +54,13 @@ class PPOModel:
             entropy_coeff=0.0,
             clip_param=0.1,
             epochs=5,
+            batch_size=32,
             use_conv = False):
         self.training_json = "training.json"
         self.num_states = num_states
         self.num_actions = num_actions
         self.hidden_size = hidden_size
+        self.batch_size=batch_size
         self.num_hidden_layers = num_hidden_layers
         self.lose_rate = 1e-4
         self.var = 1.0
@@ -112,9 +121,10 @@ class PPOModel:
         out_actor = tf.keras.layers.Dense(self.num_actions, kernel_initializer=tf.random_normal_initializer())(x)
         self.actor = tf.keras.models.Model(inputs=[inputs, advantage, old_prediction], outputs=[out_actor])
         self.actor.compile(optimizer=tf.keras.optimizers.Adam(),
-                loss=[proximal_policy_optimization_loss(
+                loss=[proximal_policy_optimization_loss_continuous(
                     advantage=advantage,
-                    old_prediction=old_prediction)])
+                    old_prediction=old_prediction)],
+                experimental_run_tf_function=False)
 
     def build_critic(self):
         inputs = tf.keras.Input(shape=(self.num_states,))
@@ -183,17 +193,17 @@ class PPOModel:
             
             observ_arr = np.array(ep_dic["observations"])
             observ_arr = np.reshape(observ_arr, (observ_arr.shape[0], observ_arr.shape[2]))
-            print("OBSERVATIONS: ", observ_arr)
+            #print("OBSERVATIONS: ", observ_arr)
             ep_dic["adv"] = np.reshape(ep_dic["adv"], (ep_dic["adv"].shape[0], 1))
-            print("ADVANTAGE: ", ep_dic["adv"])
+            #print("ADVANTAGE: ", ep_dic["adv"])
             ep_dic["means"] = np.array([mean.numpy()[0] for mean in ep_dic["means"]])
             ep_dic["actions"] = np.array([action.numpy()[0] for action in ep_dic["actions"]])
-            print("OLD PREDICTIONS: ", ep_dic["means"])
-            print("ACTION: ", ep_dic["actions"])
-            print("REWARD: ", ep_dic["tdlamret"])
+            #print("OLD PREDICTIONS: ", ep_dic["means"])
+            #print("ACTION: ", ep_dic["actions"])
+            #print("REWARD: ", ep_dic["tdlamret"])
 
-            self.actor.fit([observ_arr, ep_dic["adv"], ep_dic["means"]], ep_dic["actions"])
-            self.critic.fit(observ_arr, ep_dic["tdlamret"], batch_size=32, epochs=2)
+            self.actor.fit([observ_arr, ep_dic["adv"], ep_dic["means"]], ep_dic["actions"], batch_size=self.batch_size, epochs=self.epochs)
+            self.critic.fit(observ_arr, ep_dic["tdlamret"], batch_size=self.batch_size, epochs=self.epochs)
             self.training_info["episode"] += 1
             self.save_models()
             print("Done Training")
