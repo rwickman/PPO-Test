@@ -7,38 +7,25 @@ from normal_distribution import NormalDistribution
 from keras import backend as K
 
 
-LOSS_CLIPPING = 0.2 # Only implemented clipping for the surrogate loss, paper said it was best
-EPOCHS = 10
-NOISE = 1.0 # Exploration noise
+var = 0.6
+epsilon_clip = 0.1
 
-GAMMA = 0.99
+def ppo_loss_continuous(advantage, old_pred):
+        def loss(y_true, y_pred):
+            # y_true is actions taken in episode
+            # y_pred is new means predictions
+            # old_pred is old mean predictions
+            n = old_pred.shape[1]
+            new_logp = - n/2 * K.log(2*np.pi) - (1/(2 * var)) * K.sum(K.square(y_true - y_pred), axis=-1)
+            old_logp = - n/2 * K.log(2*np.pi) - (1/(2 * var)) * K.sum(K.square(y_true - old_pred), axis=-1)
 
-BUFFER_SIZE = 2048
-BATCH_SIZE = 256
-NUM_ACTIONS = 4
-NUM_STATE = 8
-HIDDEN_SIZE = 128
-NUM_LAYERS = 2
-ENTROPY_LOSS = 5e-3
-LR = 1e-4  # Lower lr stabilises training greatly
+            ratio = K.exp(new_logp - old_logp)
+            surrogate_1 = ratio * advantage
+            surrogate_2 = K.clip(ratio, 1.0 - epsilon_clip, 1.0 + epsilon_clip) * advantage
 
-DUMMY_ACTION, DUMMY_VALUE = np.zeros((1, NUM_ACTIONS)), np.zeros((1, 1))
+            return - K.mean(K.minimum(surrogate_1, surrogate_2))
+        return loss
 
-
-def proximal_policy_optimization_loss_continuous(advantage, old_prediction):
-    def loss(y_true, y_pred):
-        var = K.square(NOISE)
-        pi = 3.1415926
-        denom = K.sqrt(2 * pi * var)
-        prob_num = K.exp(- K.square(y_true - y_pred) / (2 * var))
-        old_prob_num = K.exp(- K.square(y_true - old_prediction) / (2 * var))
-
-        prob = prob_num/denom
-        old_prob = old_prob_num/denom
-        r = prob/(old_prob + 1e-10)
-
-        return -K.mean(K.minimum(r * advantage, K.clip(r, min_value=1 - LOSS_CLIPPING, max_value=1 + LOSS_CLIPPING) * advantage))
-    return loss
 
 
 class PPOModel:
@@ -48,7 +35,7 @@ class PPOModel:
             should_load_models=False,
             hidden_size=64,
             num_hidden_layers = 2,
-            epsilon_clip=0.1,
+            ep_clip=0.1,
             gamma=0.99,
             lam=0.95,
             entropy_coeff=0.0,
@@ -64,8 +51,9 @@ class PPOModel:
         self.batch_size=batch_size
         self.num_hidden_layers = num_hidden_layers
         self.lose_rate = 1e-4
-        self.var = 1.0
-        self.epsilon_clip = epsilon_clip
+        self.epsilon_clip = ep_clip
+        global epsilon_clip
+        epsilon_clip = ep_clip
         self.distribution = NormalDistribution(num_actions=num_actions)
         self.use_conv = use_conv
         self.build_actor_and_critic()
@@ -74,26 +62,11 @@ class PPOModel:
         self.entropy_coeff = entropy_coeff
         self.epochs = epochs
         self.train_lock = threading.Lock()
-        
         self.dummy_action=np.zeros((1,self.num_actions))
         self.dummy_value=np.zeros((1, 1))
-        self.var = 1
-    
-    def ppo_loss_continuous(self, advantage, old_prediction):
-        def loss(y_true, y_pred):
-            denom = tf.keras.backend.sqrt(tf.keras.backend.variable(2.0 * np.pi * self.var))
-            prob_num = tf.keras.backend.exp(- tf.keras.backend.square(y_true - y_pred) / (2 * self.var))
-            old_prob_num = tf.keras.backend.exp(- tf.keras.backend.square(y_true - old_prediction) / (2 * self.var))
-
-            prob = prob_num/denom
-            old_prob = old_prob_num/denom
-            
-            r = prob/(old_prob + 1e-10)
-
-            return -tf.keras.backend.mean(tf.keras.backend.minimum(r * advantage, tf.keras.backend.clip(r, min_value=1 - self.epsilon_clip, max_value=1 + self.epsilon_clip) * advantage))
-        return loss
-
-    
+        global var
+        var = 0.6
+        
     def build_actor_and_critic(self):
         self.build_actor()
         self.build_critic()        
@@ -106,17 +79,17 @@ class PPOModel:
     def build_actor(self):
         inputs = tf.keras.Input(shape=(self.num_states,))
         advantage = tf.keras.Input(shape=(1,))
-        old_prediction = tf.keras.Input(shape=(self.num_actions,))
+        old_pred = tf.keras.Input(shape=(self.num_actions,))
 
         x = tf.keras.layers.Dense(self.hidden_size, activation="relu")(inputs)
         for _ in range(self.num_hidden_layers - 1):
             x = tf.keras.layers.Dense(self.hidden_size, activation="relu")(x)
         out_actor = tf.keras.layers.Dense(self.num_actions, kernel_initializer=tf.random_normal_initializer())(x)
-        self.actor = tf.keras.models.Model(inputs=[inputs, advantage, old_prediction], outputs=[out_actor])
+        self.actor = tf.keras.models.Model(inputs=[inputs, advantage, old_pred], outputs=[out_actor])
         self.actor.compile(optimizer=tf.keras.optimizers.Adam(),
-                loss=[proximal_policy_optimization_loss_continuous(
+                loss=[ppo_loss_continuous(
                     advantage=advantage,
-                    old_prediction=old_prediction)],
+                    old_pred=old_pred)],
                 experimental_run_tf_function=False)
         self.actor.summary()
 
