@@ -4,7 +4,7 @@ from ppo_model import PPOModel
 env = gym.make("CartPole-v0")
 env.reset()
 
-ppo_model = PPOModel(num_states=4, num_actions=1, epochs=1)
+ppo_model = PPOModel(num_states=4, num_actions=1, epochs=1, should_load_models=True)
 for i_episode in range(1000):
     observation = env.reset()
     observs = []

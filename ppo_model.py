@@ -44,8 +44,8 @@ def proximal_policy_optimization_loss_continuous(advantage, old_prediction):
 class PPOModel:
     def __init__(self,
             num_states,
-            should_load_model=False,
             num_actions=6 ,
+            should_load_models=False,
             hidden_size=64,
             num_hidden_layers = 2,
             epsilon_clip=0.1,
@@ -56,8 +56,9 @@ class PPOModel:
             epochs=5,
             batch_size=32,
             use_conv = False):
-        self.training_json = "training.json"
+        self.training_json = "model_weights/training.json"
         self.num_states = num_states
+        self.should_load_models = should_load_models
         self.num_actions = num_actions
         self.hidden_size = hidden_size
         self.batch_size=batch_size
@@ -67,11 +68,7 @@ class PPOModel:
         self.epsilon_clip = epsilon_clip
         self.distribution = NormalDistribution(num_actions=num_actions)
         self.use_conv = use_conv
-        if should_load_model:
-            self.load_models()
-        else:
-            self.build_actor_and_critic()
-        self.critic.compile(optimizer=tf.keras.optimizers.Adam(), loss="mse")
+        self.build_actor_and_critic()
         self.gamma = gamma
         self.lam = lam
         self.entropy_coeff = entropy_coeff
@@ -98,17 +95,13 @@ class PPOModel:
 
     
     def build_actor_and_critic(self):
-        if self.use_conv:
-            self.build_actor_conv()
-            self.build_critic_conv()
-            print("Building CNN.")
+        self.build_actor()
+        self.build_critic()        
+        if self.should_load_models:
+            self.load_model_weights()
         else:
-            self.build_actor()
-            self.build_critic()
+            self.training_info = {"episode" : 0}
         self.optimizer = tf.keras.optimizers.Adam()
-        self.actor.summary()
-        self.critic.summary()
-        self.training_info = {"episode" : 0}
 
     def build_actor(self):
         inputs = tf.keras.Input(shape=(self.num_states,))
@@ -125,6 +118,7 @@ class PPOModel:
                     advantage=advantage,
                     old_prediction=old_prediction)],
                 experimental_run_tf_function=False)
+        self.actor.summary()
 
     def build_critic(self):
         inputs = tf.keras.Input(shape=(self.num_states,))
@@ -133,6 +127,8 @@ class PPOModel:
             x = tf.keras.layers.Dense(self.hidden_size, activation="relu")(x)
         out_critic = tf.keras.layers.Dense(1, kernel_initializer=tf.random_normal_initializer())(x)
         self.critic = tf.keras.models.Model(inputs=[inputs], outputs=[out_critic])
+        self.critic.compile(optimizer=tf.keras.optimizers.Adam(), loss="mse")
+        self.critic.summary()
 
     def build_actor_conv(self):
         inputs = tf.keras.Input(shape=(self.num_states,1,1))
@@ -205,7 +201,7 @@ class PPOModel:
             self.actor.fit([observ_arr, ep_dic["adv"], ep_dic["means"]], ep_dic["actions"], batch_size=self.batch_size, epochs=self.epochs)
             self.critic.fit(observ_arr, ep_dic["tdlamret"], batch_size=self.batch_size, epochs=self.epochs)
             self.training_info["episode"] += 1
-            self.save_models()
+            self.save_model_weights()
             print("Done Training")
             return self.actor.get_weights(), self.critic.get_weights()
 
@@ -261,6 +257,21 @@ class PPOModel:
         self.actor.summary()
         self.critic.summary()
 
+        with open(self.training_json, "r") as f:
+            self.training_info = json.load(f)
+
+    def save_model_weights(self):
+        self.actor.save_weights("model_weights/actor_model")
+        self.critic.save_weights("model_weights/critic_model")
+        with open(self.training_json, "w") as f:
+            json.dump(self.training_info, f)
+
+
+    def load_model_weights(self):
+        self.actor.load_weights("model_weights/actor_model")
+        self.critic.load_weights("model_weights/critic_model")
+        self.optimizer = tf.keras.optimizers.Adam()
+        
         with open(self.training_json, "r") as f:
             self.training_info = json.load(f)
 
